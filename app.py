@@ -55,9 +55,9 @@ with app.app_context():
 # CONSTANTS & LOCAL MEMORY (RAM)
 # ======================
 TOKEN_EXPIRY = 20
-COOLDOWN = 120
-KEY_LIMIT = 120
-COOLDOWN_LIMIT = 86400  # 24 Hours in seconds
+COOLDOWN = 30
+KEY_LIMIT = 30
+COOLDOWN_LIMIT = 30  # 24 Hours in seconds
 
 db_cache = {"tokens": {}, "device_limit": {}, "daily_limit": {}}
 
