@@ -203,45 +203,40 @@ def token():
     return jsonify({"status": "success", "token": token_id})
 
 
-def handle_getkey(db_type):
-    token_id = request.args.get("token")
-    source = request.args.get("src", "site")
-    duration = request.args.get("duration", "3h")
+@app.route("/getkey", methods=['GET']) # Pwede mo ring gamitin ito sa /script/getkey
+def handle_getkey():
+    # 1. Kunin ang mga kailangan nang walang token verification
+    source = request.args.get("src", "bot")
+    duration = request.args.get("duration", "1h")
     max_dev = request.args.get("max", "1")
+    device_id = request.args.get("device_id", "unknown_device") # Kunin ang device ID galing sa app/site
     now = time.time()
 
-    if not token_id or token_id not in db_cache["tokens"]:
-        return jsonify({"status": "error", "message": "Token expired"}), 403
-
-    token_data = db_cache["tokens"][token_id]
-    device_id = token_data["device_id"]
     ip = request.remote_addr
 
+    # Optional: VPN Check (Panatilihin kung gusto mo ng security)
     if is_vpn_or_proxy(ip):
         return jsonify({"status": "error", "type": "vpn", "message": "VPN detected please turn off your vpn"}), 403
 
+    # (Opsyonal) Kung gusto mo pa ring may 24-hour limit bawat device, panatilihin ito. 
+    # Pero kung gusto mo talagang "unli generate" kahit sa parehong device, pwede mo itong i-comment out o tanggalin.
     if device_id in db_cache["daily_limit"]:
         elapsed = now - db_cache["daily_limit"][device_id]["time"]
         remaining_sec = int(COOLDOWN_LIMIT - elapsed)
-        return jsonify({
-            "status": "limit",
-            "type": "limit",
-            "remaining_seconds": remaining_sec,
-            "message": "Your free key has ended please try again tomorrow"
-        }), 403
+        if remaining_sec > 0:
+            return jsonify({
+                "status": "limit",
+                "type": "limit",
+                "remaining_seconds": remaining_sec,
+                "message": "Your free key has ended please try again tomorrow"
+            }), 403
 
-    if device_id in db_cache["device_limit"]:
-        wait = int(KEY_LIMIT - (now - db_cache["device_limit"][device_id]))
-        if wait > 0:
-            return jsonify({"status": "wait", "message": "Bypass detected!"}), 403
-
-    # 1. Ayusin ang format ng duration para sa unahan ng key
+    # 2. Pagbuo ng key format na gusto mo (Kaze-1d...)
     if duration.lower() == 'lifetime':
         formatted_dur = "Lifetime"
     else:
-        formatted_dur = duration.lower() # Halimbawa: 1d, 2d, 30d
+        formatted_dur = duration.lower()
 
-    # 2. Sundin ang gusto mong istilo base sa kung galing sa bot o site
     if source == "bot":
         prefix = f"Kaze-{formatted_dur}"
     else:
@@ -251,7 +246,7 @@ def handle_getkey(db_type):
     expiry_seconds = convert_duration(duration)
 
     try:
-        conn = get_db_connection(db_type)
+        conn = get_db_connection("script") # O kung anong database type mo
         cur = conn.cursor()
         cur.execute(
             """
@@ -266,10 +261,9 @@ def handle_getkey(db_type):
     except Exception as e:
         return jsonify({"status": "error", "message": f"Database error: {str(e)}"}), 500
 
-    db_cache["device_limit"][device_id] = now
     db_cache["daily_limit"][device_id] = {"time": now}
-    del db_cache["tokens"][token_id]
 
+    # 3. Ibalik agad ang key nang walang token-expired error!
     return jsonify({
         "status": "success",
         "key": key,
