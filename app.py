@@ -235,7 +235,18 @@ def handle_getkey(db_type):
         if wait > 0:
             return jsonify({"status": "wait", "message": "Bypass detected!"}), 403
 
-    prefix = "Kaze-" if source == "bot" else "KazeFreeKey-"
+    # 1. Ayusin ang format ng duration para sa unahan ng key
+    if duration.lower() == 'lifetime':
+        formatted_dur = "Lifetime"
+    else:
+        formatted_dur = duration.lower() # Halimbawa: 1d, 2d, 30d
+
+    # 2. Sundin ang gusto mong istilo base sa kung galing sa bot o site
+    if source == "bot":
+        prefix = f"Kaze-{formatted_dur}"
+    else:
+        prefix = f"KazeFreeKey-{formatted_dur}-"
+
     key = prefix + "".join(random.choices(string.ascii_letters + string.digits, k=12))
     expiry_seconds = convert_duration(duration)
 
