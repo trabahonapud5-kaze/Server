@@ -19,7 +19,7 @@ CORS(app)
 TOKEN_EXPIRY = 300
 COOLDOWN = 30
 KEY_LIMIT = 30
-COOLDOWN_LIMIT = 86400 
+COOLDOWN_LIMIT = 5
 
 db_cache = {"tokens": {}, "device_limit": {}, "daily_limit": {}}
 
