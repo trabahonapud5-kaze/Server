@@ -13,46 +13,8 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
-TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = os.getenv("OWNER_ID")
-
-DB_URL_INJECTOR = os.getenv("DATABASE_URL_INJECTOR") or os.getenv("DATABASE_URL")
-DB_URL_SCRIPT = os.getenv("DATABASE_URL_SCRIPT")
-
-
-def get_db_connection(db_type="injector"):
-    if db_type == "script":
-        url = DB_URL_SCRIPT
-        db_name = "DATABASE_URL_SCRIPT"
-    else:
-        url = DB_URL_INJECTOR
-        db_name = "DATABASE_URL_INJECTOR"
-
-    if not url:
-        raise ValueError(f"{db_name} environment variable is missing sa Render!")
-    return psycopg2.connect(url)
-
-
-# 2. SUNOD NA ILAGAY ANG INIT_DB DITO (KASI MAY 'app' NA SYA NA KAKILALA)
-def init_db():
-    try:
-        conn = get_db_connection("injector")
-        cur = conn.cursor()
-        cur.execute("""
-            ALTER TABLE keys ADD COLUMN IF NOT EXISTS message TEXT DEFAULT NULL;
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("Database initialized successfully: message column checked/added.")
-    except Exception as e:
-        print(f"Database init error: {e}")
-
-with app.app_context():
-    init_db()
-
 # ======================
-# CONSTANTS & LOCAL MEMORY (RAM)
+# CONFIGURATIONS & CONSTANTS
 # ======================
 TOKEN_EXPIRY = 300
 COOLDOWN = 30
@@ -79,6 +41,25 @@ def get_db_connection(db_type="injector"):
     if not url:
         raise ValueError(f"{db_name} environment variable is missing sa Render!")
     return psycopg2.connect(url)
+
+
+# 2. INIT_DB FUNCTION
+def init_db():
+    try:
+        conn = get_db_connection("injector")
+        cur = conn.cursor()
+        cur.execute("""
+            ALTER TABLE keys ADD COLUMN IF NOT EXISTS message TEXT DEFAULT NULL;
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Database initialized successfully: message column checked/added.")
+    except Exception as e:
+        print(f"Database init error: {e}")
+
+with app.app_context():
+    init_db()
 
 
 def cleanup():
@@ -203,7 +184,6 @@ def token():
     return jsonify({"status": "success", "token": token_id})
 
 
-@app.route("/getkey", methods=['GET']) # Pwede mo ring gamitin ito sa /script/getkey
 def handle_getkey(db_type):
     source = request.args.get("src", "bot")
     duration = request.args.get("duration", "1h")
@@ -264,6 +244,7 @@ def handle_getkey(db_type):
         "expires_in": expiry_seconds,
         "max_devices": max_dev,
     })
+
 
 def handle_customkey(db_type):
     custom_name = request.args.get("name")
@@ -333,10 +314,316 @@ def handle_verify(db_type):
         conn.close()
         return jsonify({"status": "invalid"})
 
-    # --- AUTOMATIC NA CUSTOM MESSAGE CHECK ---
-    # Kunin ang message, kung walang laman o None, gagawin itong empty string
     raw_message = data.get("message")
     custom_message = str(raw_message).strip() if raw_message else ""
+
+    if custom_message != "":
+        cur.close()
+        conn.close()
+        send_telegram_alert(f"🚫 *{tag} Custom Message Triggered*\nKey: `{key}`\nMessage: `{custom_message}`")
+        return jsonify({
+            "status": "custom",
+            "message": custom_message
+        })
+
+    if data["revoked"]:
+        cur.close()
+        conn.close()
+        send_telegram_alert(f"❌ *{tag} Key Revoked Attempt*\nKey: `{key}`\nDevice: `{device}`")
+        return jsonify({"status": "revoked"})
+
+    now = time.time()
+    if now > data["expiry"]:
+        cur.close()
+        conn.close()
+        send_telegram_alert(f"❌ *{tag} Key Expired Attempt*\nKey: `{key}`\nDevice: `{device}`")
+        return jsonify({"status": "expired"})
+
+    current_devices = data["device"].split(",") if data["device"] else []
+    max_allowed = data.get("max_devices", 1)
+    remaining_seconds = int(data["expiry"] - now)
+    time_left_str = format_remaining_time(remaining_seconds)
+
+    def success_response():
+        return jsonify({
+            "status": "valid",
+            "expires_in_sec": remaining_seconds,
+            "expire_str": time_left_str,
+            "message": custom_message
+        })
+
+    if device in current_devices:
+        cur.close()
+        conn.close()
+        device_index = current_devices.index(device) + 1
+        counter_str = f" ({device_index}/{max_allowed})" if max_allowed > 1 else ""
+        send_telegram_alert(
+            f"✓ *{tag} Key Used{counter_str}*\n"
+            f"Key: `{key}`\n"
+            f"Device: `{device}`\n"
+            f"Expires in: `{time_left_str}`"
+        )
+        return success_response()
+
+    if len(current_devices) < max_allowed:
+        current_devices.append(device)
+        new_device_string = ",".join(current_devices)
+
+        cur.execute(
+            "UPDATE keys SET device = %s, login_time = %s WHERE key_code = %s;",
+            (new_device_string, now, key),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        counter_str = (
+            f" ({len(current_devices)}/{max_allowed})" if max_allowed > 1 else ""
+        )
+        send_telegram_alert(
+            f"✓ *{tag} Key Used{counter_str}*\n"
+            f"Key: `{key}`\n"
+            f"Device: `{device}`\n"
+            f"Expires in: `{time_left_str}`"
+        )
+        return success_response()
+
+    cur.close()
+    conn.close()
+    send_telegram_alert(
+        f"🔒 *{tag} Max Device Limit Reached*\n"
+        f"Key: `{key}`\n"
+        f"Attempt Device: `{device}`\n"
+        f"Slots: `{len(current_devices)}/{max_allowed}`"
+    )
+    return jsonify({"status": "locked"})
+
+
+def handle_unrevoke(db_type):
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"status": "error", "message": "Missing key"}), 400
+    try:
+        conn = get_db_connection(db_type)
+        cur = conn.cursor()
+        cur.execute("UPDATE keys SET revoked = FALSE WHERE key_code = %s;", (key,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def handle_reset(db_type):
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"status": "error"}), 400
+    conn = get_db_connection(db_type)
+    cur = conn.cursor()
+    cur.execute("UPDATE keys SET device = NULL, login_time = NULL WHERE key_code = %s;", (key,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"status": "success"})
+
+
+def handle_list(db_type):
+    try:
+        status_filter = request.args.get("status", "active")
+        now = time.time()
+        conn = get_db_connection(db_type)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        if status_filter == "revoked":
+            cur.execute("SELECT key_code, device, expiry, max_devices FROM keys WHERE revoked = TRUE ORDER BY expiry DESC;")
+        else:
+            cur.execute("SELECT key_code, device, expiry, max_devices FROM keys WHERE revoked = FALSE AND expiry > %s ORDER BY expiry ASC;", (now,))
+
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        result = []
+        for r in rows:
+            result.append({
+                "key": r.get("key_code") or "UNKNOWN",
+                "device": r.get("device"),
+                "max_devices": r.get("max_devices") or 1,
+            })
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def handle_delete(db_type):
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"status": "error", "message": "Missing key"}), 400
+    try:
+        conn = get_db_connection(db_type)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM keys WHERE key_code = %s;", (key,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def handle_stats(db_type):
+    try:
+        now = time.time()
+        conn = get_db_connection(db_type)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM keys;")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM keys WHERE revoked = FALSE AND expiry > %s;", (now,))
+        active = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return jsonify({"total_keys": total, "active_keys": active, "expired_keys": total - active})
+    except Exception:
+        return jsonify({"total_keys": 0, "active_keys": 0, "expired_keys": 0})
+
+
+@app.route("/upload_screenshot", methods=["POST"])
+def upload_screenshot():
+    device_id = request.form.get("device", "Unknown Device")
+    
+    if "screenshot" not in request.files:
+        return jsonify({"status": "error", "message": "No image attached"}), 400
+    
+    file = request.files["screenshot"]
+    
+    if TELEGRAM_BOT_TOKEN and OWNER_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        files = {"photo": (file.filename, file.read(), file.content_type)}
+        payload = {
+            "chat_id": OWNER_ID,
+            "caption": f"📸 *Auto Feedback / Screenshot*\nDevice ID: `{device_id}`"
+        }
+        try:
+            requests.post(url, data=payload, files=files, timeout=10)
+        except Exception:
+            pass
+
+    return jsonify({"status": "success"})
+
+
+# ======================
+# ROUTES REGISTRATION
+# ======================
+@app.route("/getkey")
+def getkey_injector(): return handle_getkey("injector")
+@app.route("/customkey")
+def custom_key_injector(): return handle_customkey("injector")
+@app.route("/verify")
+def verify_injector(): return handle_verify("injector")
+@app.route("/revoke")
+def revoke_injector(): return jsonify({"status": "success"})
+@app.route("/unrevoke")
+def unrevoke_injector(): return handle_unrevoke("injector")
+@app.route("/reset")
+def reset_injector(): return handle_reset("injector")
+@app.route("/list")
+def list_injector(): return handle_list("injector")
+@app.route("/delete")
+def delete_injector(): return handle_delete("injector")
+@app.route("/stats")
+def stats_injector(): return handle_stats("injector")
+
+@app.route("/script/getkey")
+def getkey_script(): return handle_getkey("script")
+@app.route("/script/customkey")
+def custom_key_script(): return handle_customkey("script")
+@app.route("/script/verify")
+def verify_script(): return handle_verify("script")
+@app.route("/script/revoke")
+def revoke_script(): return jsonify({"status": "success"})
+@app.route("/script/unrevoke")
+def unrevoke_script(): return handle_unrevoke("script")
+@app.route("/script/reset")
+def reset_script(): return handle_reset("script")
+@app.route("/script/list")
+def list_script(): return handle_list("script")
+@app.route("/script/delete")
+def delete_script(): return handle_delete("script")
+@app.route("/script/stats")
+def stats_script(): return handle_stats("script")
+
+@app.route('/setmessage')
+def set_message():
+    key = request.args.get('key')
+    msg = request.args.get('msg')
+    db_type = request.args.get('db_type', 'injector')
+    
+    if not key or not msg:
+        return jsonify({"status": "error", "message": "Missing key or message"}), 400
+        
+    try:
+        conn = get_db_connection(db_type)
+        cur = conn.cursor()
+        cur.execute("SELECT key_code FROM keys WHERE key_code = %s;", (key,))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({"status": "error", "message": "Key does not exist!"}), 404
+            
+        cur.execute("UPDATE keys SET message = %s WHERE key_code = %s;", (msg, key))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "success", "message": "Custom message updated successfully!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/telegram_webhook', methods=['POST'])
+def telegram_bot():
+    data = request.json
+    if "message" in data:
+        msg_text = data["message"].get("text", "")
+        chat_id = data["message"]["chat"]["id"]
+        
+        if msg_text.startswith("/unblockmess"):
+            parts = msg_text.split(" ")
+            if len(parts) > 1:
+                target_key = parts[1].strip()
+                db_type = request.args.get('db_type', 'injector')
+                
+                try:
+                    conn = get_db_connection(db_type)
+                    cur = conn.cursor()
+                    cur.execute("UPDATE keys SET message = NULL WHERE key_code = %s;", (target_key,))
+                    conn.commit()
+                    
+                    if cur.rowcount > 0:
+                        reply_text = f"✅ *Successfully unblocked/cleared custom message for key:*\n`{target_key}`\n\nGagana na ulit ito bilang regular valid key!"
+                    else:
+                        reply_text = f"❌ *Key not found in database:* `{target_key}`"
+                    
+                    cur.close()
+                    conn.close()
+                except Exception as e:
+                    reply_text = f"❌ *Database Error:* {str(e)}"
+                
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": chat_id,
+                    "text": reply_text,
+                    "parse_mode": "Markdown",
+                }
+                try:
+                    requests.post(url, data=payload, timeout=5)
+                except Exception:
+                    pass
+            else:
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": chat_id,
+     aw_message).strip() if raw_message else ""
 
     # Kung may TUNAY na mensahe lamang ito haharangin at gagawing "custom"
     if custom_message != "":
