@@ -204,22 +204,18 @@ def token():
 
 
 @app.route("/getkey", methods=['GET']) # Pwede mo ring gamitin ito sa /script/getkey
-def handle_getkey():
-    # 1. Kunin ang mga kailangan nang walang token verification
+def handle_getkey(db_type):  # 👈 Idagdag ang db_type dito
     source = request.args.get("src", "bot")
     duration = request.args.get("duration", "1h")
     max_dev = request.args.get("max", "1")
-    device_id = request.args.get("device_id", "unknown_device") # Kunin ang device ID galing sa app/site
+    device_id = request.args.get("device_id", "unknown_device")
     now = time.time()
 
     ip = request.remote_addr
 
-    # Optional: VPN Check (Panatilihin kung gusto mo ng security)
     if is_vpn_or_proxy(ip):
         return jsonify({"status": "error", "type": "vpn", "message": "VPN detected please turn off your vpn"}), 403
 
-    # (Opsyonal) Kung gusto mo pa ring may 24-hour limit bawat device, panatilihin ito. 
-    # Pero kung gusto mo talagang "unli generate" kahit sa parehong device, pwede mo itong i-comment out o tanggalin.
     if device_id in db_cache["daily_limit"]:
         elapsed = now - db_cache["daily_limit"][device_id]["time"]
         remaining_sec = int(COOLDOWN_LIMIT - elapsed)
@@ -231,7 +227,6 @@ def handle_getkey():
                 "message": "Your free key has ended please try again tomorrow"
             }), 403
 
-    # 2. Pagbuo ng key format na gusto mo (Kaze-1d...)
     if duration.lower() == 'lifetime':
         formatted_dur = "Lifetime"
     else:
@@ -246,7 +241,8 @@ def handle_getkey():
     expiry_seconds = convert_duration(duration)
 
     try:
-        conn = get_db_connection("script") # O kung anong database type mo
+        # 🎯 Dito na gagamitin kung injector o script database ang sesentuhan
+        conn = get_db_connection(db_type) 
         cur = conn.cursor()
         cur.execute(
             """
@@ -263,14 +259,12 @@ def handle_getkey():
 
     db_cache["daily_limit"][device_id] = {"time": now}
 
-    # 3. Ibalik agad ang key nang walang token-expired error!
     return jsonify({
         "status": "success",
         "key": key,
         "expires_in": expiry_seconds,
         "max_devices": max_dev,
     })
-
 
 def handle_customkey(db_type):
     custom_name = request.args.get("name")
@@ -543,7 +537,6 @@ def upload_screenshot():
             pass
 
     return jsonify({"status": "success"})
-    
 
 @app.route("/getkey")
 def getkey_injector(): return handle_getkey("injector")
