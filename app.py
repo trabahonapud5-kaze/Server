@@ -204,7 +204,7 @@ def token():
 
 
 @app.route("/getkey", methods=['GET']) # Pwede mo ring gamitin ito sa /script/getkey
-def handle_getkey(db_type):  # 👈 Idagdag ang db_type dito
+def handle_getkey(db_type):
     source = request.args.get("src", "bot")
     duration = request.args.get("duration", "1h")
     max_dev = request.args.get("max", "1")
@@ -241,7 +241,6 @@ def handle_getkey(db_type):  # 👈 Idagdag ang db_type dito
     expiry_seconds = convert_duration(duration)
 
     try:
-        # 🎯 Dito na gagamitin kung injector o script database ang sesentuhan
         conn = get_db_connection(db_type) 
         cur = conn.cursor()
         cur.execute(
