@@ -54,10 +54,10 @@ with app.app_context():
 # ======================
 # CONSTANTS & LOCAL MEMORY (RAM)
 # ======================
-TOKEN_EXPIRY = 300  -- Ginawa nating 5 minutes (300 seconds)
+TOKEN_EXPIRY = 300
 COOLDOWN = 30
 KEY_LIMIT = 30
-COOLDOWN_LIMIT = 86400  -- (Optional din: Yung 30 seconds mo sa baba ay 30 seconds lang bago makakuha ulit ng key, pwede mo ring taasan kung 24 hours talaga ang gusto mo)
+COOLDOWN_LIMIT = 86400 
 
 db_cache = {"tokens": {}, "device_limit": {}, "daily_limit": {}}
 
