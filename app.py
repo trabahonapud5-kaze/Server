@@ -487,30 +487,46 @@ def handle_stats(db_type):
     except Exception:
         return jsonify({"total_keys": 0, "active_keys": 0, "expired_keys": 0})
 
-
-@app.route("/upload_screenshot", methods=["POST"])
-def upload_screenshot():
-    device_id = request.form.get("device", "Unknown Device")
+def handle_extend(db_type):
+    key = request.args.get("key")
+    duration = request.args.get("duration", "1d")
     
-    if "screenshot" not in request.files:
-        return jsonify({"status": "error", "message": "No image attached"}), 400
+    if not key:
+        return jsonify({"status": "error", "message": "Missing key"}), 400
     
-    file = request.files["screenshot"]
+    extension_seconds = convert_duration(duration)
+    now = time.time()
     
-    if TELEGRAM_BOT_TOKEN and OWNER_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-        files = {"photo": (file.filename, file.read(), file.content_type)}
-        payload = {
-            "chat_id": OWNER_ID,
-            "caption": f"📸 *Auto Feedback / Screenshot*\nDevice ID: `{device_id}`"
-        }
-        try:
-            requests.post(url, data=payload, files=files, timeout=10)
-        except Exception:
-            pass
-
-    return jsonify({"status": "success"})
-
+    try:
+        conn = get_db_connection(db_type)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT expiry FROM keys WHERE key_code = %s;", (key,))
+        data = cur.fetchone()
+        
+        if not data:
+            cur.close()
+            conn.close()
+            return jsonify({"status": "error", "message": "Key not found!"}), 404
+            
+        current_expiry = data["expiry"]
+        
+        # Kung expired na, mag-base sa current time; kung active pa, idagdag sa kasalukuyang expiry
+        base_time = now if current_expiry < now else current_expiry
+        new_expiry = base_time + extension_seconds
+        
+        cur.execute("UPDATE keys SET expiry = %s WHERE key_code = %s;", (new_expiry, key))
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            "status": "success",
+            "key": key,
+            "new_expiry": new_expiry,
+            "added_duration": duration
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ======================
 # ROUTES REGISTRATION
@@ -533,6 +549,8 @@ def list_injector(): return handle_list("injector")
 def delete_injector(): return handle_delete("injector")
 @app.route("/stats")
 def stats_injector(): return handle_stats("injector")
+@app.route("/extend")
+def extend_injector(): return handle_extend("injector")
 
 @app.route("/script/getkey")
 def getkey_script(): return handle_getkey("script")
@@ -552,7 +570,8 @@ def list_script(): return handle_list("script")
 def delete_script(): return handle_delete("script")
 @app.route("/script/stats")
 def stats_script(): return handle_stats("script")
-
+@app.route("/script/extend")
+def extend_script(): return handle_extend("script")
 @app.route('/setmessage')
 def set_message():
     key = request.args.get('key')
