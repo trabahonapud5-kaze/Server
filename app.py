@@ -105,28 +105,45 @@ def send_telegram_alert(message: str):
         pass
 
 
-def format_remaining_time(seconds: int) -> str:
-    seconds = int(seconds)
-    if seconds <= 0:
-        return "Expired"
-    if seconds >= 900000000:
+import time
+
+# Helper para ma-convert ang remaining seconds papuntang readable format (Days, Hours, Minutes)
+def format_remaining(expiry_timestamp):
+    if expiry_timestamp == 0 or expiry_timestamp > 32503680000: # Lifetime
         return "Lifetime"
-
-    days = seconds // 86400
-    hours = (seconds % 86400) // 3600
-    minutes = (seconds % 3600) // 60
-
+    
+    diff = expiry_timestamp - time.time()
+    if diff <= 0:
+        return "Expired"
+        
+    days = int(diff // 86400)
+    hours = int((diff % 86400) // 3600)
+    minutes = int((diff % 3600) // 60)
+    
     parts = []
     if days > 0:
         parts.append(f"{days}d")
-    if hours > 0:
+    if hours > 0 or days > 0:
         parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-
-    if not parts:
-        return "Less than 1m"
+    parts.append(f"{minutes}m")
+    
     return " ".join(parts)
+
+# Sa loob ng iyong handle_extend function sa server:
+# Pagka-update ng database at nakuha mo na ang bagong `new_expiry` (timestamp), isama ito:
+# ...
+# cur.execute("UPDATE keys SET expiry = %s WHERE key_code = %s;", (new_expiry, key))
+# ...
+
+    readable_time = format_remaining(new_expiry)
+
+    return jsonify({
+        "status": "success",
+        "key": key,
+        "new_expiry": new_expiry,
+        "remaining_time": readable_time,
+        "added_duration": duration
+    })
 
 
 def convert_duration(duration: str) -> int:
