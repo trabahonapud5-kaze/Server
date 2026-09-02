@@ -104,7 +104,6 @@ def send_telegram_alert(message: str):
     except Exception:
         pass
 
-
 import time
 
 # Helper para ma-convert ang remaining seconds papuntang readable format (Days, Hours, Minutes)
@@ -135,6 +134,16 @@ def format_remaining(expiry_timestamp):
 # cur.execute("UPDATE keys SET expiry = %s WHERE key_code = %s;", (new_expiry, key))
 # ...
 
+    readable_time = format_remaining(new_expiry)
+
+    return jsonify({
+        "status": "success",
+        "key": key,
+        "new_expiry": new_expiry,
+        "remaining_time": readable_time,
+        "added_duration": duration
+    })
+    
 def convert_duration(duration: str) -> int:
     if not duration:
         return 10800
@@ -348,7 +357,7 @@ def handle_verify(db_type):
     current_devices = data["device"].split(",") if data["device"] else []
     max_allowed = data.get("max_devices", 1)
     remaining_seconds = int(data["expiry"] - now)
-    time_left_str = format_remaining_time(remaining_seconds)
+    time_left_str = format_remaining(data["expiry"])
 
     def success_response():
         return jsonify({
