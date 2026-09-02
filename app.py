@@ -135,17 +135,6 @@ def format_remaining(expiry_timestamp):
 # cur.execute("UPDATE keys SET expiry = %s WHERE key_code = %s;", (new_expiry, key))
 # ...
 
-    readable_time = format_remaining(new_expiry)
-
-    return jsonify({
-        "status": "success",
-        "key": key,
-        "new_expiry": new_expiry,
-        "remaining_time": readable_time,
-        "added_duration": duration
-    })
-
-
 def convert_duration(duration: str) -> int:
     if not duration:
         return 10800
