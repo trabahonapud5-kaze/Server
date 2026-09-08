@@ -324,11 +324,12 @@ def handle_verify(db_type):
             conn.close()
             bot_username = "CodmInjCheckingbot"
             bot_link = f"https://t.me/{bot_username}?start={device}"
+            # TINAWAG NA WALANG 403 SA HULI PARA HINDI MAG-EMPTY RESPONSE SA LUA
             return jsonify({
                 "status": "link_required",
                 "message": "Please start the Telegram bot first!",
                 "bot_url": bot_link
-            }), 403
+            })
 
         # 2. I-check ang validity ng key pagkatapos ma-verify ang telegram
         cur.execute("SELECT * FROM keys WHERE key_code = %s;", (key,))
@@ -376,7 +377,8 @@ def handle_verify(db_type):
                 "status": "valid",
                 "expires_in_sec": remaining_seconds,
                 "expire_str": time_left_str,
-                "message": custom_message
+                "message": custom_message,
+                "telegram_user": telegram_user
             })
 
         if device in current_devices:
@@ -429,7 +431,6 @@ def handle_verify(db_type):
         return jsonify({"status": "locked"})
 
     except Exception as e:
-        # ITO ANG MAGPI-PRINT NG ERROR SA RENDER LOGS AT MAGBABALIK NG JSON SA LUA KAYA HINDI NA EMPTY
         print("-----------------------------------------")
         print("CRASH ERROR SA /verify:")
         traceback.print_exc()
@@ -530,6 +531,7 @@ def handle_stats(db_type):
         return jsonify({"total_keys": total, "active_keys": active, "expired_keys": total - active})
     except Exception:
         return jsonify({"total_keys": 0, "active_keys": 0, "expired_keys": 0})
+
 
 def handle_extend(db_type):
     key = request.args.get("key")
@@ -649,6 +651,9 @@ def set_message():
 @app.route('/telegram_webhook', methods=['POST'])
 def telegram_bot():
     data = request.json
+    if not data:
+        return "OK", 200
+
     if "message" in data:
         msg = data["message"]
         msg_text = msg.get("text", "")
