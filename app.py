@@ -295,7 +295,7 @@ def handle_customkey(db_type):
 
         tag = "[SCRIPT]" if db_type == "script" else "[INJECTOR]"
         send_telegram_alert(
-            f"ðŸŽ *{tag} Custom Key Created*\n"
+            f"🎁 *{tag} Custom Key Created*\n"
             f"Key: `{key}`\n"
             f"Duration: `{duration}`\n"
             f"Max Devices: `{max_dev}`"
@@ -335,7 +335,7 @@ def handle_verify(db_type):
     if custom_message != "":
         cur.close()
         conn.close()
-        send_telegram_alert(f"ðŸš« *{tag} Custom Message Triggered*\nKey: `{key}`\nMessage: `{custom_message}`")
+        send_telegram_alert(f"🚫 *{tag} Custom Message Triggered*\nKey: `{key}`\nMessage: `{custom_message}`")
         return jsonify({
             "status": "custom",
             "message": custom_message
@@ -344,14 +344,14 @@ def handle_verify(db_type):
     if data["revoked"]:
         cur.close()
         conn.close()
-        send_telegram_alert(f"âŒ *{tag} Key Revoked Attempt*\nKey: `{key}`\nDevice: `{device}`")
+        send_telegram_alert(f"❌ *{tag} Key Revoked Attempt*\nKey: `{key}`\nDevice: `{device}`")
         return jsonify({"status": "revoked"})
 
     now = time.time()
     if now > data["expiry"]:
         cur.close()
         conn.close()
-        send_telegram_alert(f"âŒ *{tag} Key Expired Attempt*\nKey: `{key}`\nDevice: `{device}`")
+        send_telegram_alert(f"❌ *{tag} Key Expired Attempt*\nKey: `{key}`\nDevice: `{device}`")
         return jsonify({"status": "expired"})
 
     current_devices = data["device"].split(",") if data["device"] else []
@@ -373,7 +373,7 @@ def handle_verify(db_type):
         device_index = current_devices.index(device) + 1
         counter_str = f" ({device_index}/{max_allowed})" if max_allowed > 1 else ""
         send_telegram_alert(
-            f"âœ“ *{tag} Key Used{counter_str}*\n"
+            f"✓ *{tag} Key Used{counter_str}*\n"
             f"Key: `{key}`\n"
             f"Device: `{device}`\n"
             f"Expires in: `{time_left_str}`"
@@ -396,7 +396,7 @@ def handle_verify(db_type):
             f" ({len(current_devices)}/{max_allowed})" if max_allowed > 1 else ""
         )
         send_telegram_alert(
-            f"âœ“ *{tag} Key Used{counter_str}*\n"
+            f"✓ *{tag} Key Used{counter_str}*\n"
             f"Key: `{key}`\n"
             f"Device: `{device}`\n"
             f"Expires in: `{time_left_str}`"
@@ -406,7 +406,7 @@ def handle_verify(db_type):
     cur.close()
     conn.close()
     send_telegram_alert(
-        f"ðŸ”’ *{tag} Max Device Limit Reached*\n"
+        f"🔒 *{tag} Max Device Limit Reached*\n"
         f"Key: `{key}`\n"
         f"Attempt Device: `{device}`\n"
         f"Slots: `{len(current_devices)}/{max_allowed}`"
