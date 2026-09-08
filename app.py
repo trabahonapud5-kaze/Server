@@ -322,7 +322,7 @@ def handle_verify(db_type):
         if not telegram_user:
             cur.close()
             conn.close()
-            bot_username = "KAZEHAYAVIPBOT"
+            bot_username = "CodmInjCheckingbot"
             bot_link = f"https://t.me/{bot_username}?start={device}"
             return jsonify({
                 "status": "link_required",
