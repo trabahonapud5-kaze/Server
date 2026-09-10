@@ -3,13 +3,15 @@ import random
 import string
 import time
 import uuid
+import traceback
+from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
+from datetime import datetime, timezone, timedelta
 
-# 1. GAWIN MUNA ANG APP DITO
 app = Flask(__name__)
 CORS(app)
 
@@ -23,8 +25,13 @@ COOLDOWN_LIMIT = 5
 
 db_cache = {"tokens": {}, "device_limit": {}, "daily_limit": {}}
 
+# Login Notification Bot (Existing)
 TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = os.getenv("OWNER_ID")
+
+# Register Notification Bot (New)
+REGISTER_BOT_TOKEN = "8848387971:AAHk5zM22c_CHYPhOH6Ks35bb90J5uUyTww"
+REGISTER_OWNER_ID = "7201369115"
 
 DB_URL_INJECTOR = os.getenv("DATABASE_URL_INJECTOR") or os.getenv("DATABASE_URL")
 DB_URL_SCRIPT = os.getenv("DATABASE_URL_SCRIPT")
@@ -43,18 +50,25 @@ def get_db_connection(db_type="injector"):
     return psycopg2.connect(url)
 
 
-# 2. INIT_DB FUNCTION
 def init_db():
     try:
         conn = get_db_connection("injector")
         cur = conn.cursor()
         cur.execute("""
             ALTER TABLE keys ADD COLUMN IF NOT EXISTS message TEXT DEFAULT NULL;
+            
+            CREATE TABLE IF NOT EXISTS device_links (
+                device_id TEXT PRIMARY KEY
+            );
+            
+            ALTER TABLE device_links ADD COLUMN IF NOT EXISTS chat_id BIGINT;
+            ALTER TABLE device_links ADD COLUMN IF NOT EXISTS telegram_user TEXT;
+            ALTER TABLE device_links ADD COLUMN IF NOT EXISTS linked_at REAL;
         """)
         conn.commit()
         cur.close()
         conn.close()
-        print("Database initialized successfully: message column checked/added.")
+        print("Database initialized and updated successfully.")
     except Exception as e:
         print(f"Database init error: {e}")
 
@@ -104,11 +118,24 @@ def send_telegram_alert(message: str):
     except Exception:
         pass
 
-import time
 
-# Helper para ma-convert ang remaining seconds papuntang readable format (Days, Hours, Minutes)
+def send_register_alert(message: str):
+    if not REGISTER_BOT_TOKEN or not REGISTER_OWNER_ID:
+        return
+    url = f"https://api.telegram.org/bot{REGISTER_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": REGISTER_OWNER_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+    }
+    try:
+        requests.post(url, data=payload, timeout=5)
+    except Exception:
+        pass
+
+
 def format_remaining(expiry_timestamp):
-    if expiry_timestamp == 0 or expiry_timestamp > 32503680000: # Lifetime
+    if expiry_timestamp == 0 or expiry_timestamp > 32503680000:
         return "Lifetime"
     
     diff = expiry_timestamp - time.time()
@@ -128,22 +155,7 @@ def format_remaining(expiry_timestamp):
     
     return " ".join(parts)
 
-# Sa loob ng iyong handle_extend function sa server:
-# Pagka-update ng database at nakuha mo na ang bagong `new_expiry` (timestamp), isama ito:
-# ...
-# cur.execute("UPDATE keys SET expiry = %s WHERE key_code = %s;", (new_expiry, key))
-# ...
 
-    readable_time = format_remaining(new_expiry)
-
-    return jsonify({
-        "status": "success",
-        "key": key,
-        "new_expiry": new_expiry,
-        "remaining_time": readable_time,
-        "added_duration": duration
-    })
-    
 def convert_duration(duration: str) -> int:
     if not duration:
         return 10800
@@ -311,107 +323,233 @@ def handle_customkey(db_type):
 
 
 def handle_verify(db_type):
-    cleanup()
-    key = request.args.get("key")
-    device = request.args.get("device")
-    if not key or not device:
-        return jsonify({"status": "invalid"}), 400
+    try:
+        cleanup()
+        key = request.args.get("key")
+        device = request.args.get("device")
+        if not key or not device:
+            return jsonify({"status": "invalid", "message": "Missing key or device"}), 400
 
-    conn = get_db_connection(db_type)
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM keys WHERE key_code = %s;", (key,))
-    data = cur.fetchone()
+        conn = get_db_connection(db_type)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    tag = "[SCRIPT]" if db_type == "script" else "[INJECTOR]"
+        cur.execute("SELECT * FROM device_links WHERE device_id = %s;", (device,))
+        link_data = cur.fetchone()
 
-    if not data:
+        bot_username = "KazeRegisterBot"
+        bot_link = f"https://t.me/{bot_username}?start={device}"
+
+        if not link_data or not link_data.get("chat_id"):
+            cur.close()
+            conn.close()
+            return jsonify({
+                "status": "link_required",
+                "message": "Please start the Telegram bot first!",
+                "bot_url": bot_link
+            })
+
+        chat_id = link_data["chat_id"]
+        stored_user = link_data["telegram_user"]
+
+        normalized_stored = stored_user.lstrip('@').lower() if stored_user else ""
+        current_telegram_user = normalized_stored
+
+        try:
+            url = f"https://api.telegram.org/bot{REGISTER_BOT_TOKEN}/getChat?chat_id={chat_id}"
+            resp = requests.get(url, timeout=3).json()
+            if resp.get("ok"):
+                live_user = resp["result"].get("username")
+                if live_user:
+                    current_telegram_user = live_user.lstrip('@').lower()
+        except Exception:
+            pass
+
+        if not stored_user.startswith("tg://"):
+            if current_telegram_user != normalized_stored and 'live_user' in locals() and live_user:
+                new_identifier = f"@{live_user}"
+                cur.execute("UPDATE device_links SET telegram_user = %s WHERE device_id = %s;", (new_identifier, device))
+                conn.commit()
+                stored_user = new_identifier
+
+        telegram_user = stored_user
+
+        if telegram_user.startswith("tg://"):
+            user_id_num = telegram_user.split("=")[-1]
+            user_line = (
+                f"👤 User Login: [Open Chat](tg://openmessage?user_id={user_id_num})\n"
+                f"┃  🆔 User ID: `{user_id_num}`"
+            )
+        else:
+            clean_username = telegram_user.lstrip('@')
+            user_line = f"👤 User Login: [@{clean_username}](https://t.me/{clean_username})"
+            
+        cur.execute("SELECT * FROM keys WHERE key_code = %s;", (key,))
+        data = cur.fetchone()
+
+        if not data:
+            cur.close()
+            conn.close()
+            return jsonify({"status": "invalid"})
+
+        raw_message = data.get("message")
+        custom_message = str(raw_message).strip() if raw_message else ""
+
+        if custom_message != "":
+            cur.close()
+            conn.close()
+            send_telegram_alert(
+                f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🚫 𝗖𝗨𝗦𝗧𝗢𝗠 𝗠𝗘𝗦𝗦𝗔𝗚𝗘\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🔑 Key: `{key}`\n"
+                f"┃  💬 Message: {custom_message}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  {user_line}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  ⚡ 𝗠𝗘𝗦𝗦𝗔𝗚𝗘 𝗧𝗥𝗜𝗚𝗚𝗘𝗥𝗘𝗗\n"
+                f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            return jsonify({"status": "custom", "message": custom_message})
+
+        if data["revoked"]:
+            cur.close()
+            conn.close()
+            send_telegram_alert(
+                f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🚫 𝗞𝗘𝗬 𝗥𝗘𝗩𝗢𝗞𝗘𝗗\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🔑 Key: `{key}`\n"
+                f"┃  📱 Device: {device}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  {user_line}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🔴 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗\n"
+                f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            return jsonify({"status": "revoked"})
+
+        now = time.time()
+        if now > data["expiry"]:
+            cur.close()
+            conn.close()
+            send_telegram_alert(
+                f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  ❌ 𝗞𝗘𝗬 𝗘𝗫𝗣𝗜𝗥𝗘𝗗\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🔑 Key: `{key}`\n"
+                f"┃  📱 Device: {device}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  {user_line}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🔴 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗\n"
+                f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            return jsonify({"status": "expired"})
+
+        current_devices = data["device"].split(",") if data["device"] else []
+        max_allowed = data.get("max_devices", 1)
+        remaining_seconds = int(data["expiry"] - now)
+        time_left_str = format_remaining(data["expiry"])
+
+        def success_response():
+            return jsonify({
+                "status": "valid",
+                "expires_in_sec": remaining_seconds,
+                "expire_str": time_left_str,
+                "message": custom_message,
+                "telegram_user": telegram_user
+            })
+
+        if device in current_devices:
+            cur.close()
+            conn.close()
+            device_index = current_devices.index(device) + 1
+            counter_str = f" ({device_index}/{max_allowed})" if max_allowed > 1 else ""
+            send_telegram_alert(
+                f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  ✓ 𝗟𝗢𝗚𝗜𝗡 𝗦𝗨𝗖𝗖𝗘𝗦𝗦𝗙𝗨𝗟{counter_str}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🔑 Key: `{key}`\n"
+                f"┃  📱 Device: {device}\n"
+                f"┃  ⏳ Expires in: {time_left_str}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  {user_line}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🟢 𝗔𝗖𝗖𝗘𝗦𝗦 𝗚𝗥𝗔𝗡𝗧𝗘𝗗\n"
+                f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            return success_response()
+
+        if len(current_devices) < max_allowed:
+            current_devices.append(device)
+            new_device_string = ",".join(current_devices)
+
+            cur.execute(
+                "UPDATE keys SET device = %s, login_time = %s WHERE key_code = %s;",
+                (new_device_string, now, key),
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            counter_str = f" ({len(current_devices)}/{max_allowed})" if max_allowed > 1 else ""
+            send_telegram_alert(
+                f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  ✓ 𝗟𝗢𝗚𝗜𝗡 𝗦𝗨𝗖𝗖𝗘𝗦𝗦𝗙𝗨𝗟{counter_str}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🔑 Key: `{key}`\n"
+                f"┃  📱 Device: {device}\n"
+                f"┃  ⏳ Expires in: {time_left_str}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  {user_line}\n"
+                f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"┃  🟢 𝗔𝗖𝗖𝗘𝗦𝗦 𝗚𝗥𝗔𝗡𝗧𝗘𝗗\n"
+                f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            return success_response()
+
         cur.close()
         conn.close()
-        return jsonify({"status": "invalid"})
-
-    raw_message = data.get("message")
-    custom_message = str(raw_message).strip() if raw_message else ""
-
-    if custom_message != "":
-        cur.close()
-        conn.close()
-        send_telegram_alert(f"🚫 *{tag} Custom Message Triggered*\nKey: `{key}`\nMessage: `{custom_message}`")
-        return jsonify({
-            "status": "custom",
-            "message": custom_message
-        })
-
-    if data["revoked"]:
-        cur.close()
-        conn.close()
-        send_telegram_alert(f"❌ *{tag} Key Revoked Attempt*\nKey: `{key}`\nDevice: `{device}`")
-        return jsonify({"status": "revoked"})
-
-    now = time.time()
-    if now > data["expiry"]:
-        cur.close()
-        conn.close()
-        send_telegram_alert(f"❌ *{tag} Key Expired Attempt*\nKey: `{key}`\nDevice: `{device}`")
-        return jsonify({"status": "expired"})
-
-    current_devices = data["device"].split(",") if data["device"] else []
-    max_allowed = data.get("max_devices", 1)
-    remaining_seconds = int(data["expiry"] - now)
-    time_left_str = format_remaining(data["expiry"])
-
-    def success_response():
-        return jsonify({
-            "status": "valid",
-            "expires_in_sec": remaining_seconds,
-            "expire_str": time_left_str,
-            "message": custom_message
-        })
-
-    if device in current_devices:
-        cur.close()
-        conn.close()
-        device_index = current_devices.index(device) + 1
-        counter_str = f" ({device_index}/{max_allowed})" if max_allowed > 1 else ""
         send_telegram_alert(
-            f"✓ *{tag} Key Used{counter_str}*\n"
-            f"Key: `{key}`\n"
-            f"Device: `{device}`\n"
-            f"Expires in: `{time_left_str}`"
+            f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┃  ⚠️ 𝗠𝗔𝗫 𝗗𝗘𝗩𝗜𝗖𝗘 𝗟𝗜𝗠𝗜𝗧\n"
+            f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┃  🔑 Key: `{key}`\n"
+            f"┃  📱 Attempt Device: {device}\n"
+            f"┃  💻 Device Slots: {len(current_devices)}/{max_allowed}\n"
+            f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┃  {user_line}\n"
+            f"┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"┃  🔴 𝗔𝗖𝗖𝗘𝗦𝗦 𝗗𝗘𝗡𝗜𝗘𝗗\n"
+            f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        return success_response()
+        return jsonify({"status": "locked"})
 
-    if len(current_devices) < max_allowed:
-        current_devices.append(device)
-        new_device_string = ",".join(current_devices)
+    except Exception as e:
+        print("-----------------------------------------")
+        print("CRASH ERROR SA /verify:")
+        traceback.print_exc()
+        print("-----------------------------------------")
+        return jsonify({
+            "status": "error",
+            "message": f"Server Exception: {str(e)}"
+        }), 500
 
-        cur.execute(
-            "UPDATE keys SET device = %s, login_time = %s WHERE key_code = %s;",
-            (new_device_string, now, key),
-        )
+
+def handle_revoke(db_type):
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"status": "error", "message": "Missing key"}), 400
+    try:
+        conn = get_db_connection(db_type)
+        cur = conn.cursor()
+        cur.execute("UPDATE keys SET revoked = TRUE WHERE key_code = %s;", (key,))
         conn.commit()
         cur.close()
         conn.close()
-
-        counter_str = (
-            f" ({len(current_devices)}/{max_allowed})" if max_allowed > 1 else ""
-        )
-        send_telegram_alert(
-            f"✓ *{tag} Key Used{counter_str}*\n"
-            f"Key: `{key}`\n"
-            f"Device: `{device}`\n"
-            f"Expires in: `{time_left_str}`"
-        )
-        return success_response()
-
-    cur.close()
-    conn.close()
-    send_telegram_alert(
-        f"🔒 *{tag} Max Device Limit Reached*\n"
-        f"Key: `{key}`\n"
-        f"Attempt Device: `{device}`\n"
-        f"Slots: `{len(current_devices)}/{max_allowed}`"
-    )
-    return jsonify({"status": "locked"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 def handle_unrevoke(db_type):
@@ -434,13 +572,30 @@ def handle_reset(db_type):
     key = request.args.get("key")
     if not key:
         return jsonify({"status": "error"}), 400
-    conn = get_db_connection(db_type)
-    cur = conn.cursor()
-    cur.execute("UPDATE keys SET device = NULL, login_time = NULL WHERE key_code = %s;", (key,))
-    conn.commit()
-    cur.close()
-    conn.close()
-    return jsonify({"status": "success"})
+    try:
+        conn = get_db_connection(db_type)
+        cur = conn.cursor()
+        cur.execute("UPDATE keys SET device = NULL, login_time = NULL WHERE key_code = %s;", (key,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/reset-all-keys", methods=["GET"])
+def handle_reset_all():
+    try:
+        conn = get_db_connection("injector") 
+        cur = conn.cursor()
+        cur.execute("UPDATE keys SET device = NULL, login_time = NULL;")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "success", "message": "All keys have been reset successfully!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 def handle_list(db_type):
@@ -486,7 +641,6 @@ def handle_delete(db_type):
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
 def handle_stats(db_type):
     try:
         now = time.time()
@@ -501,6 +655,7 @@ def handle_stats(db_type):
         return jsonify({"total_keys": total, "active_keys": active, "expired_keys": total - active})
     except Exception:
         return jsonify({"total_keys": 0, "active_keys": 0, "expired_keys": 0})
+
 
 def handle_extend(db_type):
     key = request.args.get("key")
@@ -524,8 +679,6 @@ def handle_extend(db_type):
             return jsonify({"status": "error", "message": "Key not found!"}), 404
             
         current_expiry = data["expiry"]
-        
-        # Kung expired na, mag-base sa current time; kung active pa, idagdag sa kasalukuyang expiry
         base_time = now if current_expiry < now else current_expiry
         new_expiry = base_time + extension_seconds
         
@@ -534,14 +687,17 @@ def handle_extend(db_type):
         cur.close()
         conn.close()
         
+        readable_time = format_remaining(new_expiry)
         return jsonify({
             "status": "success",
             "key": key,
             "new_expiry": new_expiry,
+            "remaining_time": readable_time,
             "added_duration": duration
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
 
 # ======================
 # ROUTES REGISTRATION
@@ -553,7 +709,7 @@ def custom_key_injector(): return handle_customkey("injector")
 @app.route("/verify")
 def verify_injector(): return handle_verify("injector")
 @app.route("/revoke")
-def revoke_injector(): return jsonify({"status": "success"})
+def revoke_injector(): return handle_revoke("injector")
 @app.route("/unrevoke")
 def unrevoke_injector(): return handle_unrevoke("injector")
 @app.route("/reset")
@@ -567,6 +723,45 @@ def stats_injector(): return handle_stats("injector")
 @app.route("/extend")
 def extend_injector(): return handle_extend("injector")
 
+@app.route("/unregister_bot_user", methods=["GET"])
+def unregister_bot_user():
+    identifier = request.args.get("identifier", "").strip()
+    
+    if not identifier:
+        return {"status": "error", "message": "Missing identifier"}, 400
+
+    try:
+        conn = get_db_connection('injector')
+        cur = conn.cursor()
+        
+        if identifier.isdigit():
+            link_pattern = f"%user_id={identifier}%"
+            cur.execute(
+                "DELETE FROM device_links WHERE telegram_user LIKE %s OR telegram_user = %s;", 
+                (link_pattern, identifier)
+            )
+        else:
+            clean_username = identifier.lstrip('@')
+            username_pattern = f"%{clean_username}%"
+            
+            cur.execute(
+                "DELETE FROM device_links WHERE telegram_user ILIKE %s OR telegram_user ILIKE %s;", 
+                (username_pattern, f"@{clean_username}")
+            )
+            
+        conn.commit()
+        deleted_rows = cur.rowcount
+        cur.close()
+        conn.close()
+        
+        if deleted_rows > 0:
+            return {"status": "success", "message": f"User '{identifier}' unlinked successfully. Total deleted: {deleted_rows}"}
+        else:
+            return {"status": "error", "message": f"User or Device with identifier '{identifier}' not found in database."}, 404
+            
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+        
 @app.route("/script/getkey")
 def getkey_script(): return handle_getkey("script")
 @app.route("/script/customkey")
@@ -574,7 +769,7 @@ def custom_key_script(): return handle_customkey("script")
 @app.route("/script/verify")
 def verify_script(): return handle_verify("script")
 @app.route("/script/revoke")
-def revoke_script(): return jsonify({"status": "success"})
+def revoke_script(): return handle_revoke("script")
 @app.route("/script/unrevoke")
 def unrevoke_script(): return handle_unrevoke("script")
 @app.route("/script/reset")
@@ -587,6 +782,7 @@ def delete_script(): return handle_delete("script")
 def stats_script(): return handle_stats("script")
 @app.route("/script/extend")
 def extend_script(): return handle_extend("script")
+
 @app.route('/setmessage')
 def set_message():
     key = request.args.get('key')
@@ -613,62 +809,133 @@ def set_message():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/admin/clear_devices", methods=["GET"])
+def clear_devices():
+    try:
+        conn = get_db_connection('injector')
+        cur = conn.cursor()
+        cur.execute("DELETE FROM device_links;")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return "SUCCESS: Lahat ng device links ay nabura na!"
+    except Exception as e:
+        return f"Error: {e}", 500
 
-@app.route('/telegram_webhook', methods=['POST'])
-def telegram_bot():
+
+# ======================
+# NEW REGISTRATION WEBHOOK (Para sa @KazeRegisterBot)
+# ======================
+@app.route('/register_webhook', methods=['POST'])
+def register_bot():
     data = request.json
+    if not data:
+        return "OK", 200
+
     if "message" in data:
-        msg_text = data["message"].get("text", "")
-        chat_id = data["message"]["chat"]["id"]
+        msg = data["message"]
+        msg_text = msg.get("text", "")
+        chat_id = msg["chat"]["id"]
+        user_info = msg.get("from", {})
         
-        if msg_text.startswith("/unblockmess"):
+        username = user_info.get("username")
+        user_id = user_info.get("id")
+        
+        if username:
+            telegram_identifier = f"@{username}"
+            display_username = f"@{username}"
+        else:
+            telegram_identifier = f"tg://openmessage?user_id={user_id}"
+            display_username = f"ID: {user_id}"
+
+        if msg_text.startswith("/start"):
             parts = msg_text.split(" ")
             if len(parts) > 1:
-                target_key = parts[1].strip()
-                db_type = request.args.get('db_type', 'injector')
+                device_id = parts[1].strip()
+                db_type = 'injector'
                 
                 try:
                     conn = get_db_connection(db_type)
                     cur = conn.cursor()
-                    cur.execute("UPDATE keys SET message = NULL WHERE key_code = %s;", (target_key,))
+                    
+                    # I-check muna kung bagong device ba ito o nag-update lang
+                    cur.execute("SELECT 1 FROM device_links WHERE device_id = %s;", (device_id,))
+                    exists = cur.fetchone()
+                    
+                    # I-save o i-update sa database
+                    cur.execute("""
+                        INSERT INTO device_links (device_id, chat_id, telegram_user, linked_at)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (device_id) 
+                        DO UPDATE SET chat_id = EXCLUDED.chat_id, telegram_user = EXCLUDED.telegram_user, linked_at = EXCLUDED.linked_at;
+                    """, (device_id, chat_id, telegram_identifier, time.time()))
+                    
+                    # Kunin ang total count ng mga naka-register
+                    cur.execute("SELECT COUNT(*) FROM device_links;")
+                    total_count = cur.fetchone()[0]
+                    
                     conn.commit()
-                    
-                    if cur.rowcount > 0:
-                        reply_text = f"✅ *Successfully unblocked/cleared custom message for key:*\n`{target_key}`\n\nGagana na ulit ito bilang regular valid key!"
-                    else:
-                        reply_text = f"❌ *Key not found in database:* `{target_key}`"
-                    
                     cur.close()
                     conn.close()
                 except Exception as e:
-                    reply_text = f"❌ *Database Error:* {str(e)}"
+                    print(f"Link error: {e}")
+                    total_count = 1
+
+                ph_time = datetime.now(timezone(timedelta(hours=8)))
+                current_time_str = ph_time.strftime("%B %d, %Y — %I:%M %p")
                 
-                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                payload = {
-                    "chat_id": chat_id,
-                    "text": reply_text,
-                    "parse_mode": "Markdown",
-                }
-                try:
-                    requests.post(url, data=payload, timeout=5)
-                except Exception:
-                    pass
-            else:
-                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                payload = {
-                    "chat_id": chat_id,
-                    "text": "⚠️ *Usage:* `/unblockmess <iyong_key>`",
-                    "parse_mode": "Markdown",
-                }
-                try:
-                    requests.post(url, data=payload, timeout=5)
-                except Exception:
-                    pass
-                    
+
+                # Admin Notification Format
+                send_register_alert(
+                    f"╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮\n"
+                    f"┃     ⚠️ 𝗡𝗘𝗪 𝗥𝗘𝗚𝗜𝗦𝗧𝗥𝗔𝗧𝗜𝗢𝗡 𝗔𝗟𝗘𝗥𝗧\n"
+                    f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+                    f"📊 𝗥𝗘𝗚𝗜𝗦𝗧𝗥𝗔𝗧𝗜𝗢𝗡 𝗖𝗢𝗨𝗡𝗧\n"
+                    f"• Total Registrations: {total_count}\n"
+                    f"• New Registration: +1\n\n"
+                    f"👤 𝗨𝗦𝗘𝗥 𝗗𝗘𝗧𝗔𝗜𝗟𝗦\n"
+                    f"• Username: {display_username}\n"
+                    f"• User ID: {user_id}\n\n"
+                    f"📱 𝗗𝗘𝗩𝗜𝗖𝗘 𝗗𝗘𝗧𝗔𝗜𝗟𝗦\n"
+                    f"• Device ID: `{device_id}`\n\n"
+                    f"🕐 𝗥𝗘𝗚𝗜𝗦𝗧𝗥𝗔𝗧𝗜𝗢𝗡 𝗧𝗜𝗠𝗘\n"
+                    f"• {current_time_str}\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"✅ 𝗦𝗧𝗔𝗧𝗨𝗦\n"
+                    f"Registration successfully received.\n\n"
+                    f"🤖 𝗔𝗨𝗧𝗢𝗠𝗔𝗧𝗘𝗗 𝗡𝗢𝗧𝗜𝗙𝗜𝗖𝗔𝗧𝗜𝗢𝗡"
+                )
+            
+            # User Success Reply Format
+            reply_text = (
+                "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮\n"
+                "┃     ✅ 𝗥𝗘𝗚𝗜𝗦𝗧𝗘𝗥 𝗦𝗨𝗖𝗖𝗘𝗦𝗦‼️\n"
+                "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+                "🎉 Your registration has been completed successfully!\n"
+                "✨ You're all set and ready to continue.\n\n"
+                "📱 𝗡𝗘𝗫𝗧 𝗦𝗧𝗘𝗣𝗦 Return to the Codm Injector and tap:\n"
+                "↻ 𝗖𝗛𝗘𝗖𝗞 𝗦𝗧𝗔𝗧𝗨𝗦\n\n"
+                "⚠️ 𝗔𝗖𝗧𝗜𝗢𝗡 𝗥𝗘𝗤𝗨𝗜𝗥𝗘𝗗\n"
+                "Please tap CHECK STATUS to confirm your registration\n"
+                "and continue using the injector.\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💬 𝗡𝗘𝗘𝗗 𝗛𝗘𝗟𝗣?\n"
+                "For questions or assistance, contact:\n"
+                "📩 @KAZEHAYAMODZ"
+            )
+            
+            url = f"https://api.telegram.org/bot{REGISTER_BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": reply_text,
+            }
+            try:
+                requests.post(url, json=payload, timeout=5)
+            except Exception:
+                pass
+
     return "OK", 200
-    
+
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-    
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
