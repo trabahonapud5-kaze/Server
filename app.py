@@ -980,6 +980,43 @@ def register_bot():
 
     return "OK", 200
 
-
+@app.route('/admin/add_key')
+def add_key():
+    raw_key = request.args.get('key')
+    # Default sa 'injector', pero pwede mong gawing 'script'
+    db_type = request.args.get('db_type', 'injector') 
+    
+    if not raw_key:
+        return jsonify({
+            "status": "error", 
+            "message": "Maglagay ng key! Halimbawa: /admin/add_key?key=KAZE-123&db_type=script"
+        }), 400
+        
+    key_code = raw_key.strip()
+    
+    try:
+        conn = get_db_connection(db_type)
+        cur = conn.cursor()
+        
+        # I-check kung existing na
+        cur.execute("SELECT key_code FROM keys WHERE key_code = %s;", (key_code,))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({"status": "error", "message": f"Existing na ang key na ito sa {db_type} database!"}), 400
+            
+        # I-insert ang key kasama ang expiry o iba pang columns kung kailangan
+        cur.execute(
+            "INSERT INTO keys (key_code, expiry, revoked, max_devices) VALUES (%s, %s, FALSE, 1);", 
+            (key_code, time.time() + 86400) # Default na 1 day expiry, pwede mong baguhin
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return jsonify({"status": "success", "message": f"Tagumpay na naidagdag ang key sa [{db_type}]: {key_code}"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+        
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
