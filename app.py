@@ -52,29 +52,36 @@ def get_token():
     
     return jsonify({"token": token}), 200
 
+import random
+import string
+
 @app.route('/getkey', methods=['GET'])
 def get_key():
     token = request.args.get('token')
     if not token or token not in active_tokens:
         return jsonify({"status": "error", "message": "Invalid or expired token"}), 400
     
+    device_id = active_tokens[token]
+    
     try:
-        response = supabase.table('FLUXHAX').select('*').is_('device_id', 'null').limit(1).execute()
+        # Gumawa ng sariling key gamit ang format mo: CODM-FREEKEY + random numbers
+        random_digits = ''.join(random.choices(string.digits, k=5))
+        new_key = f"CODM-FREEKEY{random_digits}"
         
-        if not response.data or len(response.data) == 0:
-            response = supabase.table('FLUXHAX').select('*').filter('device_id', 'is', 'null').limit(1).execute()
-            
-        if not response.data or len(response.data) == 0:
-            return jsonify({"status": "error", "message": "No available keys at the moment. Try again later."}), 403
-            
-        free_key = response.data[0].get('key')
+        # I-save agad ang bagong key sa Supabase at i-bind sa device_id na ito
+        supabase.table('FLUXHAX').insert({
+            'key': new_key,
+            'device_id': device_id
+        }).execute()
+        
+        # Tanggalin na ang token para hindi maulit
         del active_tokens[token]
         
-        return jsonify({"status": "success", "key": free_key}), 200
+        return jsonify({"status": "success", "key": new_key}), 200
         
     except Exception as e:
         print("Error in getkey:", str(e))
         return jsonify({"status": "error", "message": "Server internal error"}), 500
-
+        
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
