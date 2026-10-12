@@ -3,7 +3,7 @@ from flask_cors import CORS
 import os
 import random
 import string
-from supabase import create_client, Client
+from datetime import datetime, timedelta, timezone
 
 app = Flask(__name__)
 CORS(app)
@@ -34,13 +34,27 @@ def verify_key():
         
     row = response.data[0]
     bound_device = row.get('device_id')
+    expires_at = row.get('expires_at')
     
-    # Kung wala pang device na nakakabit (NULL), i-bind ito sa Android phone device_id
+    # Check kung nag-expire na ang key (3-hour duration)
+    if expires_at:
+        exp_time = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        if now > exp_time:
+            return jsonify({"status": "error", "message": "Key has already expired!"}), 403
+
+    # Kung wala pang device na nakakabit, i-bind sa device_id at itakda ang expiration
     if not bound_device:
-        supabase.table('FLUXHAX').update({'device_id': device_id}).eq('key', entered_key).execute()
+        now = datetime.now(timezone.utc)
+        expire_time = (now + timedelta(hours=3)).isoformat()
+        
+        supabase.table('FLUXHAX').update({
+            'device_id': device_id,
+            'expires_at': expire_time
+        }).eq('key', entered_key).execute()
+        
         return jsonify({"status": "success", "message": "Login successfully"}), 200
         
-    # Kung tugma sa kasalukuyang device_id ng app
     elif bound_device == device_id:
         return jsonify({"status": "success", "message": "Login successfully"}), 200
     else:
@@ -52,29 +66,48 @@ def get_token():
     if not device_id:
         return jsonify({"status": "error", "message": "Missing device_id"}), 400
     
+    # --- 24-HOUR COOLDOWN CHECK ---
+    # Suriin kung ang device na ito ay kumuha ng key sa loob ng huling 24 oras
+    response = supabase.table('FLUXHAX').select('*').eq('created_by_device', device_id).order('created_at', desc=True).limit(1).execute()
+    
+    if response.data and len(response.data) > 0:
+        last_created = response.data[0].get('created_at')
+        if last_created:
+            last_time = datetime.fromisoformat(last_created.replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            diff_hours = (now - last_time).total_seconds() / 3600
+            
+            if diff_hours < 24:
+                remaining_hours = int(24 - diff_hours)
+                return jsonify({"token": None, "message": f"You must wait {remaining_hours} hours before getting another key!"}), 200
+
     token = 'tok_' + os.urandom(8).hex()
     active_tokens[token] = device_id
     
     return jsonify({"token": token}), 200
 
 @app.route('/getkey', methods=['GET'])
-def get_key():
+def get_token_key():
     token = request.args.get('token')
     if not token or token not in active_tokens:
         return jsonify({"status": "error", "message": "Invalid or expired token"}), 400
     
+    device_id = active_tokens[token]
+    
     try:
-        # Bumuo ng bagong key sa format na gusto mo
         random_digits = ''.join(random.choices(string.digits, k=5))
         new_key = f"CODM-FREEKEY{random_digits}"
         
-        # I-save sa Supabase na WALANG device_id (NULL) para malayang magamit sa Android app
+        current_time = datetime.now(timezone.utc).isoformat()
+        
+        # I-save sa Supabase kasama ang nag-request para sa 24-hour cooldown tracking
         supabase.table('FLUXHAX').insert({
             'key': new_key,
-            'device_id': None
+            'device_id': None,
+            'created_by_device': device_id,
+            'created_at': current_time
         }).execute()
         
-        # Burahin ang token para hindi maabuso
         del active_tokens[token]
         
         return jsonify({"status": "success", "key": new_key}), 200
