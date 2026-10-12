@@ -4,6 +4,7 @@ import os
 import random
 import string
 from datetime import datetime, timedelta, timezone
+from supabase import create_client, Client  # <--- Ito ang nakaligtaan
 
 app = Flask(__name__)
 CORS(app)
@@ -67,7 +68,6 @@ def get_token():
         return jsonify({"status": "error", "message": "Missing device_id"}), 400
     
     # --- 24-HOUR COOLDOWN CHECK ---
-    # Suriin kung ang device na ito ay kumuha ng key sa loob ng huling 24 oras
     response = supabase.table('FLUXHAX').select('*').eq('created_by_device', device_id).order('created_at', desc=True).limit(1).execute()
     
     if response.data and len(response.data) > 0:
@@ -100,7 +100,6 @@ def get_token_key():
         
         current_time = datetime.now(timezone.utc).isoformat()
         
-        # I-save sa Supabase kasama ang nag-request para sa 24-hour cooldown tracking
         supabase.table('FLUXHAX').insert({
             'key': new_key,
             'device_id': None,
