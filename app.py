@@ -64,17 +64,18 @@ def get_key():
     device_id = active_tokens[token]
     
     try:
-        # Gumawa ng sariling key gamit ang format mo: CODM-FREEKEY + random numbers
+        # Gumawa ng sariling key: CODM-FREEKEY + 5 random digits
         random_digits = ''.join(random.choices(string.digits, k=5))
         new_key = f"CODM-FREEKEY{random_digits}"
         
-        # I-save agad ang bagong key sa Supabase at i-bind sa device_id na ito
+        # I-save sa Supabase pero IWANANG NULL ANG device_id 
+        # (Para ang Android App ang magba-bind nito sa phone ng user kapag nag-login na!)
         supabase.table('FLUXHAX').insert({
             'key': new_key,
-            'device_id': device_id
+            'device_id': None
         }).execute()
         
-        # Tanggalin na ang token para hindi maulit
+        # Tanggalin na ang token para hindi maulit ang request
         del active_tokens[token]
         
         return jsonify({"status": "success", "key": new_key}), 200
