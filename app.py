@@ -11,6 +11,10 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Pansamantalang memory cache para sa tokens ng web system
 active_tokens = {}
 
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({"status": "online", "message": "FLUXHAX API Server is running!"}), 200
+
 @app.route('/verify', methods=['POST'])
 def verify_key():
     data = request.get_json(force=True)
