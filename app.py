@@ -58,18 +58,27 @@ def get_key():
     if not token or token not in active_tokens:
         return jsonify({"status": "error", "message": "Invalid or expired token"}), 400
     
-    # Humanap ng bakanteng key sa 'FLUXHAX' table kung saan wala pang nakakabit na device_id (NULL)
-    response = supabase.table('FLUXHAX').select('*').is_('device_id', 'null').limit(1).execute()
-    
-    if not response.data or len(response.data) == 0:
-        return jsonify({"status": "error", "message": "No available keys at the moment. Try again later."}), 403
+    try:
+        # Subukang kunin ang row na walang laman ang device_id
+        response = supabase.table('FLUXHAX').select('*').is_('device_id', 'null').limit(1).execute()
         
-    free_key = response.data[0].get('key')
-    
-    # Burahin na ang token para hindi maulit gamitin
-    del active_tokens[token]
-    
-    return jsonify({"status": "success", "key": free_key}), 200
-
+        # Kung walang makuha gamit ang .is_, subukan nating i-filter nang direkta
+        if not response.data or len(response.data) == 0:
+            response = supabase.table('FLUXHAX').select('*').filter('device_id', 'is', 'null').limit(1).execute()
+            
+        if not response.data or len(response.data) == 0:
+            return jsonify({"status": "error", "message": "No available keys at the moment. Try again later."}), 403
+            
+        free_key = response.data[0].get('key')
+        
+        # Tanggalin na ang token para hindi maulit
+        del active_tokens[token]
+        
+        return jsonify({"status": "success", "key": free_key}), 200
+        
+    except Exception as e:
+        print("Error in getkey:", str(e))
+        return jsonify({"status": "error", "message": "Server internal error"}), 500
+        
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
