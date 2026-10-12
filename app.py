@@ -1,10 +1,12 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # <--- I-import ang CORS
+from flask_cors import CORS
 import os
+import random
+import string
 from supabase import create_client, Client
 
 app = Flask(__name__)
-CORS(app)  # <--- Paganahin ang CORS para sa lahat ng routes
+CORS(app)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "YOUR_SUPABASE_URL_HERE")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "YOUR_SUPABASE_SERVICE_ROLE_KEY_HERE")
@@ -33,9 +35,12 @@ def verify_key():
     row = response.data[0]
     bound_device = row.get('device_id')
     
+    # Kung wala pang device na nakakabit (NULL), i-bind ito sa Android phone device_id
     if not bound_device:
         supabase.table('FLUXHAX').update({'device_id': device_id}).eq('key', entered_key).execute()
         return jsonify({"status": "success", "message": "Login successfully"}), 200
+        
+    # Kung tugma sa kasalukuyang device_id ng app
     elif bound_device == device_id:
         return jsonify({"status": "success", "message": "Login successfully"}), 200
     else:
@@ -52,30 +57,24 @@ def get_token():
     
     return jsonify({"token": token}), 200
 
-import random
-import string
-
 @app.route('/getkey', methods=['GET'])
 def get_key():
     token = request.args.get('token')
     if not token or token not in active_tokens:
         return jsonify({"status": "error", "message": "Invalid or expired token"}), 400
     
-    device_id = active_tokens[token]
-    
     try:
-        # Gumawa ng sariling key: CODM-FREEKEY + 5 random digits
+        # Bumuo ng bagong key sa format na gusto mo
         random_digits = ''.join(random.choices(string.digits, k=5))
         new_key = f"CODM-FREEKEY{random_digits}"
         
-        # I-save sa Supabase pero IWANANG NULL ANG device_id 
-        # (Para ang Android App ang magba-bind nito sa phone ng user kapag nag-login na!)
+        # I-save sa Supabase na WALANG device_id (NULL) para malayang magamit sa Android app
         supabase.table('FLUXHAX').insert({
             'key': new_key,
             'device_id': None
         }).execute()
         
-        # Tanggalin na ang token para hindi maulit ang request
+        # Burahin ang token para hindi maabuso
         del active_tokens[token]
         
         return jsonify({"status": "success", "key": new_key}), 200
