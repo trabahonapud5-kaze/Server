@@ -37,12 +37,19 @@ def verify_key():
     bound_device = row.get('device_id')
     expires_at = row.get('expires_at')
     
-    # Check kung nag-expire na ang key (3-hour duration)
+    # Check kung nag-expire na ang key (3-hour duration) - Ligtas sa NULL values
     if expires_at:
-        exp_time = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-        now = datetime.now(timezone.utc)
-        if now > exp_time:
-            return jsonify({"status": "error", "message": "Key has already expired!"}), 403
+        try:
+            clean_exp_str = str(expires_at).replace('Z', '+00:00')
+            if '+' not in clean_exp_str and '-' not in clean_exp_str[10:]:
+                clean_exp_str += '+00:00'
+                
+            exp_time = datetime.fromisoformat(clean_exp_str)
+            now = datetime.now(timezone.utc)
+            if now > exp_time:
+                return jsonify({"status": "error", "message": "Key has already expired!"}), 403
+        except Exception as e:
+            print("Expiration check error:", str(e))
 
     # Kung wala pang device na nakakabit, i-bind sa device_id at itakda ang expiration
     if not bound_device:
