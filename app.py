@@ -97,31 +97,46 @@ def get_token():
     
     return jsonify({"status": "success", "token": token}), 200
 
-@app.route('/getkey', methods=['GET'])
-def get_token_key():
-    token = request.args.get('token')
-    if not token or token not in active_tokens:
-        return jsonify({"status": "error", "message": "Invalid or expired token"}), 400
-    
-    device_id = active_tokens[token]
+@app.route('/token', methods=['GET'])
+def get_token():
+    device_id = request.args.get('device_id')
+    if not device_id:
+        return jsonify({"status": "error", "message": "Missing device_id"}), 400
     
     try:
-        random_digits = ''.join(random.choices(string.digits, k=5))
-        new_key = f"CODM-FREEKEY{random_digits}"
+        # --- 24-HOUR COOLDOWN CHECK ---
+        response = supabase.table('FLUXHAX').select('*').eq('created_by_device', device_id).order('created_at', desc=True).limit(1).execute()
         
-        current_time = datetime.now(timezone.utc).isoformat()
-        
-        supabase.table('FLUXHAX').insert({
-            'key': new_key,
-            'device_id': None,
-            'created_by_device': device_id,
-            'created_at': current_time
-        }).execute()
-        
-        del active_tokens[token]
-        
-        return jsonify({"status": "success", "key": new_key}), 200
-        
+        if response.data and len(response.data) > 0:
+            last_created = response.data[0].get('created_at')
+            if last_created:
+                # Linisin ang format kung may kasamang 'Z' o iba pa
+                last_time_str = last_created.replace('Z', '+00:00')
+                last_time = datetime.fromisoformat(last_time_str)
+                now = datetime.now(timezone.utc)
+                diff_seconds = (now - last_time).total_seconds()
+                cooldown_limit = 24 * 3600  # 24 hours
+                
+                if diff_seconds < cooldown_limit:
+                    remaining_seconds = int(cooldown_limit - diff_seconds)
+                    remaining_hours = remaining_seconds // 3600
+                    remaining_minutes = (remaining_seconds % 3600) // 60
+                    
+                    return jsonify({
+                        "status": "cooldown", 
+                        "message": f"You already have a key! Please wait {remaining_hours}h {remaining_minutes}m before getting another key."
+                    }), 200
+    except Exception as e:
+        # I-print sa Render logs kung bakit nag-error ang cooldown check
+        print("CRITICAL COOLDOWN ERROR:", str(e))
+        # Para ligtas, huwag munang magbigay ng token kapag nag-error ang database check
+        return jsonify({"status": "error", "message": "Cooldown check failed. Try again later."}), 200
+
+    token = 'tok_' + os.urandom(8).hex()
+    active_tokens[token] = device_id
+    
+    return jsonify({"status": "success", "token": token}), 200
+    
     except Exception as e:
         print("Error in getkey:", str(e))
         return jsonify({"status": "error", "message": "Server internal error"}), 500
