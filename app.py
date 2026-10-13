@@ -68,7 +68,7 @@ def get_token():
         return jsonify({"status": "error", "message": "Missing device_id"}), 400
     
     try:
-        # --- 24-HOUR COOLDOWN CHECK (Ligtas sa error kung blangko pa ang table) ---
+        # --- 24-HOUR COOLDOWN CHECK ---
         response = supabase.table('FLUXHAX').select('*').eq('created_by_device', device_id).order('created_at', desc=True).limit(1).execute()
         
         if response.data and len(response.data) > 0:
@@ -76,18 +76,26 @@ def get_token():
             if last_created:
                 last_time = datetime.fromisoformat(last_created.replace('Z', '+00:00'))
                 now = datetime.now(timezone.utc)
-                diff_hours = (now - last_time).total_seconds() / 3600
+                diff_seconds = (now - last_time).total_seconds()
+                cooldown_limit = 24 * 3600  # 24 hours in seconds
                 
-                if diff_hours < 24:
-                    remaining_hours = int(24 - diff_hours)
-                    return jsonify({"token": None, "message": f"You must wait {remaining_hours} hours before getting another key!"}), 200
+                if diff_seconds < cooldown_limit:
+                    remaining_seconds = int(cooldown_limit - diff_seconds)
+                    remaining_hours = remaining_seconds // 3600
+                    remaining_minutes = (remaining_seconds % 3600) // 60
+                    
+                    # Magbabalik ng error status at message na may countdown para sa frontend mo
+                    return jsonify({
+                        "status": "cooldown", 
+                        "message": f"You already have a key! Please wait {remaining_hours}h {remaining_minutes}m before getting another key."
+                    }), 200
     except Exception as e:
-        print("Cooldown check warning:", str(e))
+        print("Cooldown check error:", str(e))
 
     token = 'tok_' + os.urandom(8).hex()
     active_tokens[token] = device_id
     
-    return jsonify({"token": token}), 200
+    return jsonify({"status": "success", "token": token}), 200
 
 @app.route('/getkey', methods=['GET'])
 def get_token_key():
