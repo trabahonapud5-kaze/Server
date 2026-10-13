@@ -68,7 +68,7 @@ def get_token():
         return jsonify({"status": "error", "message": "Missing device_id"}), 400
     
     try:
-        # --- 24-HOUR COOLDOWN CHECK ---
+        # --- 3-MINUTE COOLDOWN CHECK (Para sa Testing) ---
         response = supabase.table('FLUXHAX') \
             .select('*') \
             .eq('created_by_device', device_id) \
@@ -79,7 +79,6 @@ def get_token():
         if response.data and len(response.data) > 0:
             last_created = response.data[0].get('created_at')
             if last_created:
-                # Linisin at gawing UTC-aware ang timestamp mula sa Supabase
                 clean_time_str = str(last_created).replace('Z', '+00:00')
                 if '+' not in clean_time_str and '-' not in clean_time_str[10:]:
                     clean_time_str += '+00:00'
@@ -88,20 +87,19 @@ def get_token():
                 now = datetime.now(timezone.utc)
                 
                 diff_seconds = (now - last_time).total_seconds()
-                cooldown_limit = 24 * 3600  # 24 hours in seconds
+                cooldown_limit = 3 * 60  # 3 minutes in seconds para sa testing
                 
                 if diff_seconds < cooldown_limit:
                     remaining_seconds = int(cooldown_limit - diff_seconds)
-                    remaining_hours = remaining_seconds // 3600
-                    remaining_minutes = (remaining_seconds % 3600) // 60
+                    rem_mins = remaining_seconds // 60
+                    rem_secs = remaining_seconds % 60
                     
                     return jsonify({
                         "status": "cooldown", 
-                        "message": f"You already have a key! Please wait {remaining_hours}h {remaining_minutes}m before getting another key."
+                        "message": f"Test Cooldown! Please wait {rem_mins}m {rem_secs}s before getting another key."
                     }), 200
     except Exception as e:
         print("COOLDOWN CHECK ERROR:", str(e))
-        # Kung sakaling may lumang data na walang created_at, hayaan muna dumaan
         pass
 
     token = 'tok_' + os.urandom(8).hex()
