@@ -4,7 +4,7 @@ import os
 import random
 import string
 from datetime import datetime, timedelta, timezone
-from supabase import create_client, Client  # <--- Ito ang nakaligtaan
+from supabase import create_client, Client
 
 app = Flask(__name__)
 CORS(app)
@@ -67,31 +67,6 @@ def get_token():
     if not device_id:
         return jsonify({"status": "error", "message": "Missing device_id"}), 400
     
-    # --- 24-HOUR COOLDOWN CHECK ---
-    response = supabase.table('FLUXHAX').select('*').eq('created_by_device', device_id).order('created_at', desc=True).limit(1).execute()
-    
-    if response.data and len(response.data) > 0:
-        last_created = response.data[0].get('created_at')
-        if last_created:
-            last_time = datetime.fromisoformat(last_created.replace('Z', '+00:00'))
-            now = datetime.now(timezone.utc)
-            diff_hours = (now - last_time).total_seconds() / 3600
-            
-            if diff_hours < 24:
-                remaining_hours = int(24 - diff_hours)
-                return jsonify({"token": None, "message": f"You must wait {remaining_hours} hours before getting another key!"}), 200
-
-    token = 'tok_' + os.urandom(8).hex()
-    active_tokens[token] = device_id
-    
-    return jsonify({"token": token}), 200
-
-@app.route('/token', methods=['GET'])
-def get_token():
-    device_id = request.args.get('device_id')
-    if not device_id:
-        return jsonify({"status": "error", "message": "Missing device_id"}), 400
-    
     try:
         # --- 24-HOUR COOLDOWN CHECK (Ligtas sa error kung blangko pa ang table) ---
         response = supabase.table('FLUXHAX').select('*').eq('created_by_device', device_id).order('created_at', desc=True).limit(1).execute()
@@ -108,12 +83,36 @@ def get_token():
                     return jsonify({"token": None, "message": f"You must wait {remaining_hours} hours before getting another key!"}), 200
     except Exception as e:
         print("Cooldown check warning:", str(e))
-        # Itutuloy pa rin kahit magka-warning para hindi ma-block ang user
 
     token = 'tok_' + os.urandom(8).hex()
     active_tokens[token] = device_id
     
     return jsonify({"token": token}), 200
+
+@app.route('/getkey', methods=['GET'])
+def get_token_key():
+    token = request.args.get('token')
+    if not token or token not in active_tokens:
+        return jsonify({"status": "error", "message": "Invalid or expired token"}), 400
+    
+    device_id = active_tokens[token]
+    
+    try:
+        random_digits = ''.join(random.choices(string.digits, k=5))
+        new_key = f"CODM-FREEKEY{random_digits}"
+        
+        current_time = datetime.now(timezone.utc).isoformat()
+        
+        supabase.table('FLUXHAX').insert({
+            'key': new_key,
+            'device_id': None,
+            'created_by_device': device_id,
+            'created_at': current_time
+        }).execute()
+        
+        del active_tokens[token]
+        
+        return jsonify({"status": "success", "key": new_key}), 200
         
     except Exception as e:
         print("Error in getkey:", str(e))
